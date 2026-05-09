@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import { UserProfile, SkuRecommendation, AppPhase, Message } from '@/types/chat'
 import { routeToSku } from '@/lib/skuRouter'
 import MessageBubble from './MessageBubble'
@@ -22,6 +23,14 @@ const EMPTY_PROFILE: Partial<UserProfile> = {
   concerns: [],
 }
 
+function getMessageText(m: { parts?: { type: string; text?: string }[]; content?: string }): string {
+  if (m.parts) {
+    const textPart = m.parts.find(p => p.type === 'text')
+    return textPart?.text ?? ''
+  }
+  return m.content ?? ''
+}
+
 export default function ChatWindow() {
   const [appPhase, setAppPhase] = useState<AppPhase>('onboarding')
   const [onboardingStep, setOnboardingStep] = useState<'q1' | 'q2' | 'q3' | 'q4'>('q1')
@@ -29,6 +38,7 @@ export default function ChatWindow() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [recommendation, setRecommendation] = useState<SkuRecommendation | null>(null)
   const [leadSubmitted, setLeadSubmitted] = useState(false)
+  const [input, setInput] = useState('')
 
   const [q2Status, setQ2Status] = useState<string[]>([])
   const [q2Meds, setQ2Meds] = useState<string[]>([])
@@ -36,10 +46,19 @@ export default function ChatWindow() {
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantCount = useRef(0)
+  const userProfileRef = useRef<UserProfile | null>(null)
+  const recommendationRef = useRef<SkuRecommendation | null>(null)
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+  const transport = useMemo(() => new DefaultChatTransport({
     api: '/api/chat',
-    body: { userProfile, recommendation },
+    body: () => ({
+      userProfile: userProfileRef.current,
+      recommendation: recommendationRef.current,
+    }),
+  }), [])
+
+  const { messages, sendMessage, status } = useChat({
+    transport,
     onFinish: () => {
       assistantCount.current += 1
       if (assistantCount.current >= 2) {
@@ -47,6 +66,8 @@ export default function ChatWindow() {
       }
     },
   })
+
+  const isLoading = status === 'submitted' || status === 'streaming'
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -109,10 +130,20 @@ export default function ChatWindow() {
       concerns: partialProfile.concerns ?? [],
     }
     const rec = routeToSku(profile)
+    userProfileRef.current = profile
+    recommendationRef.current = rec
     setUserProfile(profile)
     setRecommendation(rec)
     setAppPhase('sku-recommendation')
     setTimeout(() => setAppPhase('chat'), 500)
+  }
+
+  function handleFormSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const text = input.trim()
+    if (!text || isLoading) return
+    setInput('')
+    sendMessage({ text })
   }
 
   return (
@@ -202,7 +233,7 @@ export default function ChatWindow() {
         {(appPhase === 'chat' || appPhase === 'lead-capture' || appPhase === 'lead-submitted') && messages.map((m) => (
           <MessageBubble
             key={m.id}
-            message={{ id: m.id, role: m.role as 'user' | 'assistant', content: m.content }}
+            message={{ id: m.id, role: m.role as 'user' | 'assistant', content: getMessageText(m) }}
           />
         ))}
 
@@ -228,12 +259,12 @@ export default function ChatWindow() {
 
       {(appPhase === 'chat' || appPhase === 'lead-capture' || appPhase === 'lead-submitted') && (
         <form
-          onSubmit={handleSubmit}
+          onSubmit={handleFormSubmit}
           className="flex gap-2 px-4 py-3 bg-white border-t border-gray-200 flex-shrink-0"
         >
           <input
             value={input}
-            onChange={handleInputChange}
+            onChange={e => setInput(e.target.value)}
             placeholder="IBD 영양에 대해 자유롭게 질문해주세요..."
             className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
             disabled={isLoading}
