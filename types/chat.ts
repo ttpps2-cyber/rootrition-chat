@@ -31,3 +31,19 @@ export type AppPhase =
   | 'chat'
   | 'lead-capture'
   | 'lead-submitted'
+
+export interface ChatSession {
+  id: string           // chat_sessions.id (UUID)
+  sessionId: string    // localStorage UUID
+  email: string | null
+  userProfile: UserProfile
+  recommendedSku: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ResumedSession {
+  chatSessionId: string  // chat_sessions.id
+  userProfile: UserProfile
+  recommendedSku: string
+}
