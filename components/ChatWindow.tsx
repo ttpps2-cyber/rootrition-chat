@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
-import { UserProfile, SkuRecommendation, AppPhase, Message } from '@/types/chat'
+import { UserProfile, SkuRecommendation, AppPhase, Message, ResumedSession } from '@/types/chat'
 import { routeToSku } from '@/lib/skuRouter'
 import MessageBubble from './MessageBubble'
 import OnboardingStep from './OnboardingStep'
@@ -44,6 +44,21 @@ export default function ChatWindow() {
   const [q2Meds, setQ2Meds] = useState<string[]>([])
   const [bioMedText, setBioMedText] = useState('')
 
+  const [resumeBanner, setResumeBanner] = useState(false)
+  const [showEmailResume, setShowEmailResume] = useState(false)
+  const [emailResumeInput, setEmailResumeInput] = useState('')
+  const [emailResumeError, setEmailResumeError] = useState('')
+  const chatSessionIdRef = useRef<string | null>(null)
+
+  const sessionId = useMemo(() => {
+    if (typeof window === 'undefined') return ''
+    const stored = localStorage.getItem('rootrition_session_id')
+    if (stored) return stored
+    const id = crypto.randomUUID()
+    localStorage.setItem('rootrition_session_id', id)
+    return id
+  }, [])
+
   const bottomRef = useRef<HTMLDivElement>(null)
   const assistantCount = useRef(0)
   const userProfileRef = useRef<UserProfile | null>(null)
@@ -57,6 +72,9 @@ export default function ChatWindow() {
     }),
   }), [])
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messagesRef = useRef<any[]>([])
+
   const { messages, sendMessage, status } = useChat({
     transport,
     onFinish: () => {
@@ -64,14 +82,44 @@ export default function ChatWindow() {
       if (assistantCount.current >= 2) {
         setTimeout(() => setAppPhase('lead-capture'), 1000)
       }
+      if (chatSessionIdRef.current) {
+        const msgs = messagesRef.current
+        const lastMsg = msgs[msgs.length - 1]
+        if (lastMsg?.role === 'assistant') {
+          const content = getMessageText(lastMsg)
+          fetch('/api/sync/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatSessionId: chatSessionIdRef.current, role: 'assistant', content }),
+          }).catch(e => console.warn('[sync] assistant message failed', e))
+        }
+      }
     },
   })
+  useEffect(() => { messagesRef.current = messages }, [messages])
 
   const isLoading = status === 'submitted' || status === 'streaming'
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, appPhase, onboardingStep])
+
+  useEffect(() => {
+    if (!sessionId) return
+    fetch(`/api/sync/resume?sessionId=${sessionId}`)
+      .then(r => r.json())
+      .then((data: ResumedSession | null) => {
+        if (!data) return
+        chatSessionIdRef.current = data.chatSessionId
+        userProfileRef.current = data.userProfile
+        recommendationRef.current = { primary: data.recommendedSku as SkuRecommendation['primary'] }
+        setUserProfile(data.userProfile)
+        setRecommendation({ primary: data.recommendedSku as SkuRecommendation['primary'] })
+        setAppPhase('chat')
+        setResumeBanner(true)
+      })
+      .catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleQ1Select(value: string) {
     setPartialProfile(p => ({ ...p, disease: value as UserProfile['disease'] }))
@@ -135,6 +183,18 @@ export default function ChatWindow() {
     setUserProfile(profile)
     setRecommendation(rec)
     setAppPhase('sku-recommendation')
+    fetch('/api/sync/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        userProfile: profile,
+        recommendedSku: rec.primary,
+      }),
+    })
+      .then(r => r.json())
+      .then(({ id }: { id: string }) => { chatSessionIdRef.current = id })
+      .catch(e => console.warn('[sync] session failed', e))
     setTimeout(() => setAppPhase('chat'), 500)
   }
 
@@ -144,6 +204,13 @@ export default function ChatWindow() {
     if (!text || isLoading) return
     setInput('')
     sendMessage({ text })
+    if (chatSessionIdRef.current) {
+      fetch('/api/sync/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatSessionId: chatSessionIdRef.current, role: 'user', content: text }),
+      }).catch(e => console.warn('[sync] user message failed', e))
+    }
   }
 
   return (
@@ -160,6 +227,61 @@ export default function ChatWindow() {
 
       <div className="flex-1 overflow-y-auto bg-gray-50 px-4 py-4 flex flex-col gap-4">
         <MessageBubble message={WELCOME_MESSAGE} />
+
+        {resumeBanner && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 text-xs text-blue-700">
+            이전 상담 프로필이 복원되었습니다.
+          </div>
+        )}
+
+        {appPhase === 'onboarding' && !resumeBanner && (
+          <div className="text-center">
+            <button
+              onClick={() => setShowEmailResume(v => !v)}
+              className="text-xs text-gray-400 underline"
+            >
+              이전 대화 이어하기
+            </button>
+            {showEmailResume && (
+              <form
+                onSubmit={async e => {
+                  e.preventDefault()
+                  const email = emailResumeInput.trim()
+                  if (!email) return
+                  try {
+                    const r = await fetch(`/api/sync/resume?email=${encodeURIComponent(email)}`)
+                    const data: ResumedSession | null = await r.json()
+                    if (!data) { setEmailResumeError('등록된 대화가 없습니다.'); return }
+                    chatSessionIdRef.current = data.chatSessionId
+                    userProfileRef.current = data.userProfile
+                    recommendationRef.current = { primary: data.recommendedSku as SkuRecommendation['primary'] }
+                    setUserProfile(data.userProfile)
+                    setRecommendation({ primary: data.recommendedSku as SkuRecommendation['primary'] })
+                    setAppPhase('chat')
+                    setResumeBanner(true)
+                  } catch { setEmailResumeError('복원에 실패했습니다.') }
+                }}
+                className="flex flex-col gap-1 mt-2 items-center"
+              >
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={emailResumeInput}
+                    onChange={e => { setEmailResumeInput(e.target.value); setEmailResumeError('') }}
+                    placeholder="가입 시 이메일"
+                    className="border border-gray-300 rounded-lg px-3 py-1 text-sm"
+                  />
+                  <button type="submit" className="bg-gray-600 text-white px-3 py-1 rounded-lg text-sm">
+                    불러오기
+                  </button>
+                </div>
+                {emailResumeError && (
+                  <p className="text-red-500 text-xs">{emailResumeError}</p>
+                )}
+              </form>
+            )}
+          </div>
+        )}
 
         {appPhase === 'onboarding' && (
           <>
