@@ -6,10 +6,11 @@ import { UserProfile, SkuRecommendation } from '@/types/chat'
 interface Props {
   userProfile: UserProfile
   recommendation: SkuRecommendation
+  sessionId: string
   onSubmitted: () => void
 }
 
-export default function LeadCapture({ userProfile, recommendation, onSubmitted }: Props) {
+export default function LeadCapture({ userProfile, recommendation, sessionId, onSubmitted }: Props) {
   const [email, setEmail] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -23,17 +24,24 @@ export default function LeadCapture({ userProfile, recommendation, onSubmitted }
     setIsLoading(true)
     setError('')
 
-    await fetch('/api/lead', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email,
-        disease: userProfile.disease,
-        status: userProfile.status,
-        medications: userProfile.medications.join(', '),
-        recommendedSku: recommendation.primary,
+    await Promise.allSettled([
+      fetch('/api/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          disease: userProfile.disease,
+          status: userProfile.status,
+          medications: userProfile.medications.join(', '),
+          recommendedSku: recommendation.primary,
+        }),
       }),
-    })
+      fetch('/api/sync/session/email', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, email }),
+      }),
+    ])
 
     setIsLoading(false)
     onSubmitted()

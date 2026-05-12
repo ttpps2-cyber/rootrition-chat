@@ -363,6 +363,7 @@ export default function ChatWindow() {
           <LeadCapture
             userProfile={userProfile}
             recommendation={recommendation}
+            sessionId={sessionId}
             onSubmitted={() => {
               setLeadSubmitted(true)
               setAppPhase('lead-submitted')
